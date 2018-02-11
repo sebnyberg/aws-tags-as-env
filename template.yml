@@ -1,0 +1,110 @@
+
+Parameters:
+  InstanceImageIdParameter:
+    Type: AWS::EC2::Image::Id 
+    Default: 'ami-5055cd3f'
+  InstanceTypeParameter:
+    Type: String
+    Default: t2.micro
+  InstanceKeyNameParameter:
+    Type: String
+  InstanceNameParameter:
+    Type: String
+    Default: 'aws-tags-to-env-instance'
+
+Resources:
+  MyInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aws-tags-as-env-default
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: 
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  DescribeTagsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: 'Ec2-DescribeTags'
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "ec2:DescribeTags"
+            Resource: "*"
+      Roles:
+        - Ref: MyInstanceRole
+  MyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: MyInstanceRole
+    Properties:
+      Roles:
+        - Ref: MyInstanceRole
+      InstanceProfileName: aws-tags-as-env-instanceProfile
+  Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: MyInstanceProfile
+    Properties:
+      ImageId: 
+        Ref: InstanceImageIdParameter
+      InstanceType: 
+        Ref: InstanceTypeParameter
+      KeyName: 
+        Ref: InstanceKeyNameParameter
+      IamInstanceProfile: 
+        Ref: MyInstanceProfile
+      UserData:
+        Fn::Base64: 
+          Fn::Sub: |
+            #!/bin/bash
+
+            # install pip
+            OS=`cat /etc/os-release | grep '^NAME=' |  tr -d \" | sed 's/\n//g' | sed 's/NAME=//g'`
+
+            if [ "$OS" == "Ubuntu" ]; then
+              apt-get -y update
+              apt-get -y install python-pip
+            elif [ "$OS" == "Amazon Linux AMI" ]; then
+              yum update -y 
+              yum install -y python-pip
+            fi
+
+            # install aws-cli
+            pip install --upgrade pip &> /dev/null
+            pip install awscli --ignore-installed six &> /dev/null
+
+            # add boot script which loads environment variables
+            cat > /etc/profile.d/export_instance_tags.sh << 'EOF'
+
+            # fetch instance info
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            REGION=${AWS::Region}
+
+            # export instance tags
+            export_statement=$(aws ec2 describe-tags --region "$REGION" \
+                                    --filters "Name=resource-id,Values=$INSTANCE_ID" \
+                                    --query 'Tags[?!contains(Key, `:`)].[Key,Value]' \
+                                    --output text | \
+                                    sed -E 's/^([^\s\t]+)[\s\t]+([^\n]+)$/export \1="\2"/g')
+            eval $export_statement
+
+            # export instance info
+            export INSTANCE_ID
+            export REGION
+
+            EOF
+      Tags:
+        - Key: Name
+          Value: 'My Awesome Instance'
+        - Key: INSTANCE_ROLE_ARN
+          Value: 
+            Fn::GetAtt:
+              - MyInstanceRole
+              - Arn
+        - Key: GREETING
+          Value: "Hello, world!"
+        - Key: TAG1
+          Value: "My awesome tag #1"
